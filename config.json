@@ -1,0 +1,55 @@
+{
+    "credentials": {
+        "username": "vendas@borbon.com.br",
+        "password": "Brb2025!"
+    },
+    "scraping_settings": {
+        "num_workers": 10,
+        "save_interval": 15,
+        "request_timeout": 30,
+        "max_retries": 3,
+        "retry_delay": 5
+    },
+    "excel_settings": {
+        "input_columns": {
+            "code": "A",
+            "name": "B"
+        },
+        "output_columns": [
+            "CÃ³digo",
+            "Nome",
+            "PreÃ§o",
+            "Desconto",
+            "PreÃ§o com Impostos",
+            "Cofins",
+            "Cofins Valor",
+            "Difal ST",
+            "Difal ST Valor",
+            "Fecop",
+            "Fecop Valor",
+            "ICMI Valor",
+            "ICMS",
+            "ICMS Valor",
+            "IPI",
+            "IPI Valor",
+            "PIS",
+            "PIS Valor",
+            "ST",
+            "ST Valor",
+            "Peso",
+            "Status",
+            "PaÃ­s de Origem",
+            "Tarifa Aduaneira",
+            "Possibilidade de DevoluÃ§Ã£o"
+        ]
+    },
+    "system": {
+        "log_level": "INFO",
+        "chrome_options": {
+            "window_size": "1200,800",
+            "headless": true,
+            "disable_extensions": true,
+            "sandbox": false
+        }
+    }
+}
