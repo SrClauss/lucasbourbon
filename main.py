@@ -59,6 +59,79 @@ def column_to_index(col_letter: str) -> int:
         index = index * 26 + (ord(char) - ord('A') + 1)
     return index
 
+# Classe Worker com seu próprio controle de parada e evento de login
+class ScraperWorker(threading.Thread):
+    def __init__(self, worker_id, headless_mode, app_instance, login_event):
+        super().__init__(daemon=True)
+        self.worker_id = worker_id
+        self.headless = headless_mode
+        self.app = app_instance
+        self.login_event = login_event
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        """Sinaliza para esta thread específica parar."""
+        self._stop_event.set()
+
+    def stopped(self):
+        """Verifica se a thread foi sinalizada para parar."""
+        return self._stop_event.is_set()
+
+    def run(self):
+        """O corpo de execução do worker."""
+        self.app.log(f"[Worker {self.worker_id}] Iniciando...")
+        driver = None
+        login_success = False
+        try:
+            # Tenta fazer o login primeiro
+            self.app.log(f"[Worker {self.worker_id}] Tentando fazer login...")
+            driver = login(headless=self.headless, log_queue=self.app.login_log_queue)
+            
+            if driver:
+                self.app.log(f"[Worker {self.worker_id}] ✅ Login bem-sucedido.")
+                login_success = True
+            else:
+                self.app.log(f"[Worker {self.worker_id}] ❌ Falha no login.")
+
+            # Sinaliza ao manager que a tentativa de login terminou
+            self.login_event.set()
+
+            if not login_success:
+                return
+
+            # Loop principal de processamento de tarefas
+            while not self.app.stop_event.is_set() and not self.stopped():
+                try:
+                    task = self.app.tasks_queue.get(timeout=1)
+                    code, row_num = task
+
+                    data = search_product(driver, code, worker_id=self.worker_id, row_num=row_num, log_queue=self.app.scraper_log_queue)
+                    self.app.results_queue.put(data)
+                    self.app.tasks_queue.task_done()
+
+                except queue.Empty:
+                    continue
+                except (WebDriverException, TimeoutException) as e:
+                    self.app.log(f"🚨 [Worker {self.worker_id}] Erro no navegador: {type(e).__name__}. Reiniciando driver.")
+                    self.app.tasks_queue.put(task)
+                    if driver:
+                        with contextlib.suppress(Exception): driver.quit()
+                    driver = None
+                    while not driver and not self.app.stop_event.is_set() and not self.stopped():
+                         self.app.log(f"[Worker {self.worker_id}] Retentando login...")
+                         driver = login(headless=self.headless, log_queue=self.app.login_log_queue)
+                         if not driver:
+                             time.sleep(30)
+                    continue
+
+        except Exception as e:
+            self.app.log(f"🚨 [Worker {self.worker_id}] Erro crítico, worker será finalizado: {e}")
+        finally:
+            if driver:
+                with contextlib.suppress(Exception): driver.quit()
+            self.app.log(f"[Worker {self.worker_id}] Finalizado.")
+
+
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -106,7 +179,6 @@ class Application(tk.Tk):
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 config_data = json.load(f)
-                # Validação essencial
                 if 'excel_settings' not in config_data or 'input_columns' not in config_data['excel_settings'] or 'code' not in config_data['excel_settings']['input_columns']:
                      messagebox.showerror("Erro de Configuração", "O arquivo 'config.json' precisa ter a seção 'excel_settings' com 'input_columns' e a chave 'code' definida (ex: \"code\": \"A\").")
                      return None
@@ -116,7 +188,6 @@ class Application(tk.Tk):
             return None
 
     def create_widgets(self):
-        # Frame de arquivos
         file_frame = ttk.LabelFrame(self, text="Controle de Arquivos", padding=10)
         file_frame.pack(fill=tk.X, padx=10, pady=5)
         
@@ -130,7 +201,6 @@ class Application(tk.Tk):
         self.output_label = ttk.Label(file_frame, text="Nenhum arquivo de saída definido")
         self.output_label.pack(side=tk.LEFT, padx=5)
         
-        # Área de logs
         main_log_frame = ttk.Frame(self)
         main_log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         main_log_frame.columnconfigure(0, weight=1)
@@ -147,7 +217,6 @@ class Application(tk.Tk):
         self.scraper_log_area = scrolledtext.ScrolledText(right_log_frame, state='disabled', font=('Consolas', 10))
         self.scraper_log_area.pack(fill=tk.BOTH, expand=True)
         
-        # Controles de progresso
         progress_frame = ttk.Frame(self)
         progress_frame.pack(fill=tk.X, padx=10, pady=5)
         
@@ -158,7 +227,6 @@ class Application(tk.Tk):
         self.progress_label = ttk.Label(progress_frame, text="0/0")
         self.progress_label.pack(side=tk.LEFT, padx=5)
         
-        # Controles de execução
         ctrl_frame = ttk.Frame(self)
         ctrl_frame.pack(fill=tk.X, padx=10, pady=5)
         
@@ -217,13 +285,6 @@ class Application(tk.Tk):
             self.input_label.config(text=os.path.basename(file_path))
             self.input_hash = self.calculate_file_hash(file_path)
             
-            self.output_file = os.path.join(
-                os.path.dirname(self.input_file),
-                os.path.splitext(os.path.basename(self.input_file))[0] + "_PROCESSADO.xlsx"
-            )
-            self.output_label.config(text=os.path.basename(self.output_file))
-            self.log(f"Arquivo de saída padrão definido para: {self.output_file}")
-
             try:
                 wb = openpyxl.load_workbook(file_path, read_only=True)
                 sheets = wb.sheetnames
@@ -268,7 +329,7 @@ class Application(tk.Tk):
         if file_path:
             self.output_file = file_path
             self.output_label.config(text=os.path.basename(file_path))
-            self.log(f"Arquivo de saída alterado para: {self.output_file}")
+            self.log(f"Arquivo de saída definido para: {self.output_file}")
 
     def check_output_continuity(self):
         self.reprocess_rows.clear()
@@ -338,6 +399,10 @@ class Application(tk.Tk):
             messagebox.showwarning("Aviso", "Selecione um arquivo de entrada primeiro!")
             return
         
+        if not hasattr(self, 'output_file'):
+            messagebox.showwarning("Aviso", "Selecione um arquivo de saída primeiro!")
+            return
+        
         if not hasattr(self, 'selected_sheet'):
             messagebox.showwarning("Aviso", "Nenhuma planilha foi selecionada no arquivo de entrada!")
             return
@@ -357,67 +422,67 @@ class Application(tk.Tk):
         
         self.start_btn.config(state='disabled')
         self.stop_btn.config(state='normal')
-        self.workers_spinbox.config(state='disabled')
+        self.workers_spinbox.config(state='normal')
         self.headless_check.config(state='disabled')
         self.stop_event.clear()
         
         threading.Thread(target=self.run_scraping, daemon=True).start()
 
     def _worker_manager(self, headless_mode):
+        """
+        Gerencia o pool de workers com login em lotes e ajuste dinâmico.
+        """
         worker_serial_id = 0
+        login_batch_size = self.config.get("scraping_settings", {}).get("login_batch_size", 3)
+        self.log(f"MANAGER: Iniciando logins em lotes de {login_batch_size}.")
+
         while not self.stop_event.is_set():
             with self.threads_lock:
+                # Remove threads que já terminaram da lista
                 self.worker_threads = [t for t in self.worker_threads if t.is_alive()]
+                
                 target_workers = self.num_workers_var.get()
                 current_workers = len(self.worker_threads)
                 
+                # Adiciona workers se necessário, em lotes
                 if current_workers < target_workers:
+                    # Calcula quantos workers iniciar neste lote
                     needed = target_workers - current_workers
-                    self.login_log_queue.put(f"MANAGER: Solicitando {needed} novo(s) worker(s).")
-                    for _ in range(needed):
-                        if self.stop_event.is_set(): break
+                    batch_size = min(needed, login_batch_size)
+                    self.log(f"MANAGER: Iniciando um lote de {batch_size} novo(s) worker(s).")
+                    
+                    login_events = []
+                    for _ in range(batch_size):
                         worker_serial_id += 1
-                        thread = threading.Thread(target=self._scraper_worker, args=(worker_serial_id, headless_mode), daemon=True)
-                        thread.start()
-                        self.worker_threads.append(thread)
-                        time.sleep(15)
-            time.sleep(5)
+                        login_event = threading.Event()
+                        login_events.append(login_event)
+                        worker = ScraperWorker(worker_serial_id, headless_mode, self, login_event)
+                        worker.start()
+                        self.worker_threads.append(worker)
 
-    def _scraper_worker(self, worker_id, headless_mode):
-        self.login_log_queue.put(f"[Worker {worker_id}] Iniciando...")
-        driver = None
-        while not self.stop_event.is_set():
-            try:
-                if not driver:
-                    self.login_log_queue.put(f"[Worker {worker_id}] Tentando fazer login...")
-                    driver = login(headless=headless_mode, log_queue=self.login_log_queue)
-                    if not driver:
-                        self.login_log_queue.put(f"[Worker {worker_id}] ❌ Falha no login. Tentando novamente em 30s.")
-                        time.sleep(30)
-                        continue
-                    self.login_log_queue.put(f"[Worker {worker_id}] ✅ Login bem-sucedido.")
+                    # Espera que todos os logins do lote terminem
+                    self.log(f"MANAGER: Aguardando resultado do login do lote de {batch_size} worker(s)...")
+                    for event in login_events:
+                        event.wait()
+                    self.log("MANAGER: Lote de logins concluído.")
+                
+                # Remove workers se necessário
+                elif current_workers > target_workers:
+                    to_remove = current_workers - target_workers
+                    self.log(f"MANAGER: Sinalizando para remover {to_remove} worker(s).")
+                    
+                    # Pega os últimos workers da lista para parar
+                    workers_to_stop = self.worker_threads[target_workers:]
+                    for worker in workers_to_stop:
+                        worker.stop()
 
-                while not self.stop_event.is_set():
-                    try:
-                        code, row_num = self.tasks_queue.get(timeout=1)
-                        data = search_product(driver, code, worker_id=worker_id, row_num=row_num, log_queue=self.scraper_log_queue)
-                        self.results_queue.put(data)
-                        self.tasks_queue.task_done()
-                    except queue.Empty:
-                        continue
-                    except (WebDriverException, TimeoutException) as e:
-                        self.scraper_log_queue.put(f"🚨 [Worker {worker_id}] Erro no navegador: {type(e).__name__}. Reiniciando.")
-                        self.tasks_queue.put((code, row_num))
-                        raise
-            except Exception as e:
-                self.login_log_queue.put(f"🚨 [Worker {worker_id}] Erro crítico, reiniciando: {e}")
-                if driver:
-                    with contextlib.suppress(Exception): driver.quit()
-                driver = None
-                time.sleep(15)
-        if driver:
-            with contextlib.suppress(Exception): driver.quit()
-        self.login_log_queue.put(f"[Worker {worker_id}] Finalizado.")
+            time.sleep(2)
+        
+        # Ao final do processo, sinaliza para todos os workers pararem
+        with self.threads_lock:
+            self.log("MANAGER: Sinal de parada global recebido. Encerrando todos os workers.")
+            for worker in self.worker_threads:
+                worker.stop()
 
     def run_scraping(self):
         try:
@@ -431,28 +496,19 @@ class Application(tk.Tk):
             wb_input = openpyxl.load_workbook(self.input_file, read_only=True)
             sheet_input = wb_input[self.selected_sheet]
             
-            # ================== INÍCIO DA CORREÇÃO ==================
             all_valid_tasks = []
             self.log(f"Analisando coluna '{code_column_letter}' para encontrar linhas válidas...")
-            
-            # openpyxl em modo read-only não suporta iteração de colunas diretamente.
-            # A forma correta é iterar as linhas e pegar o valor da célula correta.
-            code_col_idx = column_to_index(code_column_letter) - 1 # 0-based index para listas
+            code_col_idx = column_to_index(code_column_letter) - 1
 
-            for row in sheet_input.iter_rows(min_row=2): # Começa da linha 2 para pular o cabeçalho
-                # Pega a célula correta da linha atual
+            for row in sheet_input.iter_rows(min_row=2): 
                 cell = row[code_col_idx]
-                
-                # Adiciona à lista apenas se a célula tiver um valor e não for apenas espaços em branco
                 if cell.value and str(cell.value).strip():
                     all_valid_tasks.append({'code': str(cell.value).zfill(10), 'row_num': cell.row})
-            # =================== FIM DA CORREÇÃO ====================
 
             total_valid_rows = len(all_valid_tasks)
             self.log(f"Encontradas {total_valid_rows} linhas com códigos válidos.")
-            self.total_items = total_valid_rows # Define o total correto para a barra de progresso
+            self.total_items = total_valid_rows
             
-            # Monta a fila de tarefas a serem processadas
             tasks_to_queue = []
             if self.reprocess_rows:
                 self.log(f"Priorizando {len(self.reprocess_rows)} linha(s) para reprocessamento.")
@@ -473,7 +529,6 @@ class Application(tk.Tk):
 
             wb_input.close()
 
-            # Atualiza a UI com o total correto
             self.progress["maximum"] = self.total_items
             self.progress_label.config(text=f"{self.saved_items_count}/{self.total_items}")
             
@@ -488,33 +543,41 @@ class Application(tk.Tk):
                     data = self.results_queue.get(timeout=1)
                     if data:
                         self.unsaved_data.append(data)
-                        items_processed_session += 1
                         
-                        if len(self.unsaved_data) >= (self.num_workers_var.get() * 2):
+                        if len(self.unsaved_data) >= (self.num_workers_var.get() * 5 if self.num_workers_var.get() > 0 else 2):
                             self.save_data()
+                        
+                        total_processed = self.saved_items_count + len(self.unsaved_data)
+                        items_processed_session = total_processed - self.saved_items_count
                         
                         elapsed = time.time() - start_time
                         if elapsed > 2:
                             speed = items_processed_session / elapsed * 60
                             self.speed_var.set(f"{speed:.1f} itens/min")
-                            remaining = self.total_items - (self.saved_items_count + items_processed_session)
+                            remaining = self.total_items - total_processed
                             if speed > 0 and remaining > 0:
                                 eta_seconds = remaining / (speed / 60)
                                 h, m, s = int(eta_seconds // 3600), int((eta_seconds % 3600) // 60), int(eta_seconds % 60)
                                 self.eta_var.set(f"ETA: {h:02d}:{m:02d}:{s:02d}")
                         
+                        self.progress_var.set(total_processed)
+                        self.progress_label.config(text=f"{total_processed}/{self.total_items}")
+                        
                         with self.threads_lock:
                             active_workers = len([t for t in self.worker_threads if t.is_alive()])
                         target_workers = self.num_workers_var.get()
-                        self.status_var.set(f"Processando {self.saved_items_count + items_processed_session}/{self.total_items} | Workers: {active_workers}/{target_workers}")
+                        self.status_var.set(f"Processando {total_processed}/{self.total_items} | Workers: {active_workers}/{target_workers}")
 
                 except queue.Empty:
                     if self.tasks_queue.empty():
-                        self.log("Fila de tarefas vazia. Verificando por buracos...")
-                        if self._find_and_queue_buracos() == 0:
-                            if self.unsaved_data: self.save_data()
-                            self.log("Nenhum buraco adicional encontrado. Processamento finalizado.")
-                            break
+                        with self.threads_lock:
+                            active_workers = len([t for t in self.worker_threads if t.is_alive()])
+                        if active_workers == 0:
+                            self.log("Fila de tarefas vazia e nenhum worker ativo. Verificando por buracos...")
+                            if self._find_and_queue_buracos() == 0:
+                                if self.unsaved_data: self.save_data()
+                                self.log("Nenhum buraco adicional encontrado. Processamento finalizado.")
+                                break
                     time.sleep(0.5)
             
             if self.unsaved_data: self.save_data()
@@ -526,7 +589,14 @@ class Application(tk.Tk):
             self.log(traceback.format_exc())
         finally:
             self.cleanup()
-            self.status_var.set("Concluído" if not self.stop_event.is_set() else "Interrompido")
+            final_status = "Concluído" if not self.stop_event.is_set() else "Interrompido"
+            final_processed = self.saved_items_count
+            if final_processed > self.total_items and self.total_items > 0:
+                final_processed = self.total_items
+            
+            self.status_var.set(final_status)
+            self.progress_var.set(final_processed)
+            self.progress_label.config(text=f"{final_processed}/{self.total_items}")
             self.start_btn.config(state='normal')
             self.stop_btn.config(state='disabled')
             self.workers_spinbox.config(state='normal')
@@ -603,8 +673,6 @@ class Application(tk.Tk):
             
             items_saved_count = len(self.unsaved_data)
             self.saved_items_count += items_saved_count
-            self.progress_var.set(self.saved_items_count)
-            self.progress_label.config(text=f"{self.saved_items_count}/{self.total_items}")
             self.unsaved_data = []
             self.log(f"Lote salvo com sucesso. Total salvo: {self.saved_items_count} linhas.")
         except Exception as e:
