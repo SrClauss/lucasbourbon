@@ -4,7 +4,7 @@
         "password": "Brb2025!"
     },
     "scraping_settings": {
-        "num_workers": 10,
+        "num_workers": 3,
         "save_interval": 15,
         "request_timeout": 30,
         "max_retries": 3,
@@ -47,7 +47,7 @@
         "log_level": "INFO",
         "chrome_options": {
             "window_size": "1200,800",
-            "headless": true,
+            "headless": false,
             "disable_extensions": true,
             "sandbox": false
         }

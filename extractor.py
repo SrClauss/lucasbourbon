@@ -10,6 +10,7 @@ def search_product(driver, product_code, worker_id=None, row_num=None, log_queue
     """
     Extrai dados de um produto com estrutura de erro robusta
     """
+ 
     log_prefix = f"[Worker {worker_id}] " if worker_id else ""
     log_line = f"linha {row_num}: " if row_num else ""
     
@@ -87,20 +88,22 @@ def search_product(driver, product_code, worker_id=None, row_num=None, log_queue
                 EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Pricing')]"))
             )
             driver.execute_script("arguments[0].click();", pricing_tab)
-            
+            xpath_com_condicao = "(//div[@role='tabpanel']//td)[1][contains(., 'BRL') or contains(., 'R$')]"
             # Aguarda dados carregarem
-            WebDriverWait(driver, 15).until( # Espera o texto "BRL" aparecer
-                EC.text_to_be_present_in_element((By.XPATH, "(//div[@role='tabpanel']//td)[1]"), "BRL")
-            )
-            
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, xpath_com_condicao))
+            ).text
             # Extrai dados de preço
             tds = [td.text for td in driver.find_elements(By.XPATH, "//div[@role='tabpanel']//td")]
-            
-            product["pricing"] = tds[0].split(" ")[1]
+
+
+            product["pricing"] = tds[0].replace("R$", "").replace("BRL ", "")
             product["discount"] = "0" if tds[1] == "-" else tds[1]
-            product["pricing_with"] = tds[2].split(" ")[1]
+            product["pricing_with"] = tds[2].replace("R$", "").replace("BRL ", "")
+
                 
         except Exception as e:
+   
             # Se falhar, verifica se o produto está indisponível
             if driver.find_elements(*locators["no_longer_available"]) or driver.find_elements(*locators["cannot_add"]):
                 _log(f"{log_prefix}{log_line}⚠️ Produto indisponível: {product_code}")
