@@ -426,27 +426,32 @@ class Application(tk.Tk):
             self.results_queue = queue.Queue()
 
             code_column_letter = self.config['excel_settings']['input_columns']['code']
-            code_column_index = column_to_index(code_column_letter)
-            self.log(f"Lendo códigos da coluna {code_column_letter} (índice {code_column_index}).")
+            self.log(f"Lendo códigos da coluna {code_column_letter}.")
             
             wb_input = openpyxl.load_workbook(self.input_file, read_only=True)
             sheet_input = wb_input[self.selected_sheet]
             
             # ================== INÍCIO DA CORREÇÃO ==================
-            # Varre a planilha para encontrar o número real de linhas com dados
             all_valid_tasks = []
-            self.log("Analisando planilha de entrada para encontrar linhas válidas...")
-            for row_idx, row in enumerate(sheet_input.iter_rows(min_row=2, values_only=True), start=2):
-                # Pega o código da coluna correta
-                code = row[code_column_index - 1] if len(row) >= code_column_index else None
-                # Adiciona à lista apenas se o código existir e não for apenas espaços em branco
-                if code and str(code).strip():
-                    all_valid_tasks.append({'code': str(code).zfill(10), 'row_num': row_idx})
+            self.log(f"Analisando coluna '{code_column_letter}' para encontrar linhas válidas...")
+            
+            # openpyxl em modo read-only não suporta iteração de colunas diretamente.
+            # A forma correta é iterar as linhas e pegar o valor da célula correta.
+            code_col_idx = column_to_index(code_column_letter) - 1 # 0-based index para listas
+
+            for row in sheet_input.iter_rows(min_row=2): # Começa da linha 2 para pular o cabeçalho
+                # Pega a célula correta da linha atual
+                cell = row[code_col_idx]
+                
+                # Adiciona à lista apenas se a célula tiver um valor e não for apenas espaços em branco
+                if cell.value and str(cell.value).strip():
+                    all_valid_tasks.append({'code': str(cell.value).zfill(10), 'row_num': cell.row})
+            # =================== FIM DA CORREÇÃO ====================
 
             total_valid_rows = len(all_valid_tasks)
             self.log(f"Encontradas {total_valid_rows} linhas com códigos válidos.")
             self.total_items = total_valid_rows # Define o total correto para a barra de progresso
-
+            
             # Monta a fila de tarefas a serem processadas
             tasks_to_queue = []
             if self.reprocess_rows:
@@ -455,11 +460,9 @@ class Application(tk.Tk):
                 for task in reprocess_tasks:
                     tasks_to_queue.append((task['code'], task['row_num']))
             
-            # Adiciona tarefas novas (que não foram salvas nem estão na fila de reprocessamento)
             new_tasks = [task for task in all_valid_tasks if task['row_num'] not in self.saved_rows and task['row_num'] not in self.reprocess_rows]
             for task in new_tasks:
                 tasks_to_queue.append((task['code'], task['row_num']))
-            # =================== FIM DA CORREÇÃO ====================
             
             if tasks_to_queue:
                 self.log(f"Total de {len(tasks_to_queue)} tarefas adicionadas à fila.")
