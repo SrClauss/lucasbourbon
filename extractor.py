@@ -28,7 +28,7 @@ def search_product(driver, product_code, worker_id=None, row_num=None, log_queue
         
         # Localizadores
         locators = {
-            "product_name": (By.XPATH, "//h1[@class='mt-2']"),
+            "product_name": (By.XPATH, "//*[@id='__next']/div/div/div[1]/div[2]/section/div/div[1]/h1"),
             "not_found": (By.XPATH, "//h2[contains(., 'The server cannot find the requested resource.')]"),
             "no_longer_available": (By.XPATH, "//*[contains(text(), 'The product is no longer available')]"),
             "cannot_add": (By.XPATH, "//h5[contains(., 'Product cannot be added to cart')]")

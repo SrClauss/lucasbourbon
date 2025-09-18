@@ -1,7 +1,7 @@
 {
     "credentials": {
         "username": "vendas@borbon.com.br",
-        "password": "Brb2025!"
+        "password": "Brb2025@"
     },
     "scraping_settings": {
         "num_workers": 10,
